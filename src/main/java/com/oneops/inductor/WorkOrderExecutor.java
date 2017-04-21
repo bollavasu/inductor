@@ -19,7 +19,6 @@ package com.oneops.inductor;
 
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.stream.JsonReader;
-import com.oneops.cms.dj.domain.RfcHint;
 import com.oneops.cms.domain.CmsWorkOrderSimpleBase;
 import com.oneops.cms.simple.domain.CmsCISimple;
 import com.oneops.cms.simple.domain.CmsRfcCISimple;
@@ -30,8 +29,11 @@ import org.apache.commons.httpclient.util.DateUtil;
 import org.apache.commons.lang.ArrayUtils;
 import org.apache.commons.lang.StringUtils;
 import org.apache.log4j.Logger;
+import org.springframework.beans.BeanUtils;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.StringReader;
 import java.util.*;
@@ -54,8 +56,6 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
     private static Logger logger = Logger.getLogger(WorkOrderExecutor.class);
     private Semaphore semaphore = null;
     private Config config = null;
-
-    private String STUB_RESP_COMPONENT_PREFIX = "stub.respTime.";
 
     public WorkOrderExecutor(Config config, Semaphore semaphore) {
         super(config);
@@ -90,6 +90,7 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
                 logger.info("compute::replace - delete failed");
                 return buildResponseMessage(wo, correlationId);
             }
+
         }
         long startTime = System.currentTimeMillis();
         if (config.isCloudStubbed(wo)) {
@@ -112,7 +113,6 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
                 runWorkOrder(wo);
             }
         }
-
         long endTime = System.currentTimeMillis();
 
         int duration = Math.round((endTime - startTime) / 1000);
@@ -125,6 +125,7 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
         wo.putSearchTag(RESPONSE_ENQUE_TS,DateUtil.formatDate(new Date(), SEARCH_TS_PATTERN));
         return buildResponseMessage(wo, correlationId);
     }
+
 
     @Override
     protected List<String> getRunList(CmsWorkOrderSimpleBase wo) {
@@ -334,16 +335,11 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
     private void runComputeRemoteWorkOrder(CmsWorkOrderSimple wo, ProcessResult result, String chefConfig) {
         String host = null;
         // set the result status
-        if (isPropagationUpdate(wo)) {
-            host = wo.getRfcCi().getCiAttributes().get(config.getIpAttribute());
-        }
-        else {
-            if (result.getResultMap().containsKey(config.getIpAttribute())) {
-                host = result.getResultMap().get(config.getIpAttribute());
-            } else {
-                logger.error("resultCi missing " + config.getIpAttribute());
-                return;
-            }
+        if (result.getResultMap().containsKey(config.getIpAttribute())) {
+            host = result.getResultMap().get(config.getIpAttribute());
+        } else {
+            logger.error("resultCi missing " + config.getIpAttribute());
+            return;
         }
 
         String originalRfcAction = wo.getRfcCi().getRfcAction();
@@ -462,20 +458,36 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
 
         // sync cookbook and chef json request to remote site
         String host = null;
-        String user = "oneops";
-
+        //String user = "oneops";
+        String user = "";
+        if(wo.getCloud().getCiAttributes().get("location").indexOf("google") > -1){
+           user = "vasu";
+        }else{
+           user = "oneops";
+        }
         String keyFile = null;
         String port = "22";
 
         if (isRemote) {
 
             host = getWorkOrderHost(wo, logKey);
-
             try {
                 keyFile = writePrivateKey(wo);
             } catch (KeyNotFoundException e) {
                 logger.error(e.getMessage());
                 return;
+            }
+            if(host == null && (wo.getCloud().getCiAttributes().get("location").indexOf("google") > -1)){
+            	String ip = null;
+            	try (BufferedReader br = new BufferedReader(new FileReader("/opt/vm_ip"))) {       			
+        			while ((ip = br.readLine()) != null) { 
+        				logger.info("IP : "+ip);
+        				host = ip;
+        			}
+        		} catch (Exception e) {
+        			e.printStackTrace();
+        		}
+            	logger.info("VM IP : "+host);
             }
             if (host.contains(":")) {
                 String[] parts = host.split(":");
@@ -486,8 +498,9 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
 
             long rsyncStartTime = System.currentTimeMillis();
             String[] rsyncCmdLineWithKey = rsyncCmdLine.clone();
-            rsyncCmdLineWithKey[4] += "-p " + port + " -qi " + keyFile;
-
+            if(wo.getCloud().getCiAttributes().get("location").indexOf("google") == -1){
+               rsyncCmdLineWithKey[4] += "-p " + port + " -qi " + keyFile;
+            }
             // return with failure if empty
             if (host == null || host.isEmpty()) {
                 wo.setComments("failed : missing host/ip cannot connect");
@@ -497,12 +510,13 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
 
             String rfcAction = wo.getRfcCi().getRfcAction();
 
-            logger.info("rfc: " + wo.getRfcCi().getRfcId() + ", appName: " + appName + ", rfcAction: " + rfcAction);
+            logger.info("appName: " + appName);
+            logger.info("rfcAction: " + rfcAction);
 
             // v2 install base done via compute cookbook
             // compute::remote logic can be removed once v1 packs are decommed
-            //skip base install for propagation updates
-            if (appName.equalsIgnoreCase(COMPUTE) && rfcAction.equalsIgnoreCase(REMOTE) && !isPropagationUpdate(wo)) {
+            if (appName.equalsIgnoreCase(COMPUTE) &&
+                    rfcAction.equalsIgnoreCase(REMOTE)) {
 
                 logger.info(logKey + " ### BASE INSTALL");
                 wo.setComments("");
@@ -606,9 +620,13 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
             String remoteCmd = "sudo " + vars + " shared/exec-order.rb "
                     + wo.getRfcCi().getImpl() + " " + remoteFileName + " "
                     + cookbookPath + " " + additionalCookbookPaths + " " + debugFlag;
-
-            cmd = (String[]) ArrayUtils.addAll(sshCmdLine, new String[]{
+            if(wo.getCloud().getCiAttributes().get("location").indexOf("google") > -1){
+               cmd = (String[]) ArrayUtils.addAll(sshCmdLine, new String[]{
+                        user + "@" + host, remoteCmd});
+            }else{
+               cmd = (String[]) ArrayUtils.addAll(sshCmdLine, new String[]{
                     keyFile, "-p " + port, user + "@" + host, remoteCmd});
+            }
             logger.info(logKey + " ### EXEC: " + user + "@" + host + " "
                     + remoteCmd);
             int woRetryCount = getRetryCountForWorkOrder(wo);
@@ -651,21 +669,11 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
             removeFile(wo, keyFile);
 
         } else {
-            runLocalWorkOrder(processRunner, wo, appName, logKey, fileName, cookbookPath);
+            runLocalWorkOrder(processRunner, wo, appName, logKey, fileName,
+                    cookbookPath);
         }
         if (!isDebugEnabled(wo))
             removeFile(fileName);
-    }
-
-    private boolean isPropagationUpdate(CmsWorkOrderSimple wo) {
-        if (StringUtils.isNotBlank(wo.getRfcCi().getHint())) {
-			RfcHint hint = gson.fromJson(wo.getRfcCi().getHint(), RfcHint.class);
-			if ("true".equalsIgnoreCase(hint.getPropagation())) {
-				logger.info("propagation true for rfc " + wo.getRfcCi().getRfcId());
-				return true;
-		    }
-	    }
-	    return false;
     }
 
     private Set<String> syncServiceCookbooks(CmsWorkOrderSimple wo, String woBomCircuit, String user, 
@@ -1328,26 +1336,6 @@ public class WorkOrderExecutor extends AbstractOrderExecutor {
         wo.getSearchTags().putAll(result.getTagMap());
         wo.getAdditionalInfo().putAll(result.getAdditionInfoMap());
 
-    }
-
-    protected long getStubSleepTime(CmsWorkOrderSimpleBase woBase) {
-	    long sleepTime = 0;
-	    if (woBase instanceof CmsWorkOrderSimple) {
-		    Map<String, String> envVars = config.getEnvVars();
-		    if (envVars != null) {
-			    CmsWorkOrderSimple wo = (CmsWorkOrderSimple)woBase;
-			    String className = wo.getRfcCi().getCiClassName();
-			    String var = STUB_RESP_COMPONENT_PREFIX + wo.getAction() + "." + className;
-			    if (envVars.containsKey(var)) {
-				    sleepTime = Integer.valueOf(envVars.get(var)) + randomGenerator.nextInt(config.getStubResponseTimeInSeconds());
-				}
-			    logger.info("sleep for stub cloud, class : " + className + " action : " + wo.getAction() + " time : " + sleepTime);
-			}
-		}
-		if (sleepTime == 0) {
-			return super.getStubSleepTime(woBase);
-	    }
-		return sleepTime;
     }
 
 

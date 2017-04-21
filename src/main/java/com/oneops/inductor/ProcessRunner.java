@@ -196,7 +196,12 @@ public class ProcessRunner {
 			executor.setExitValue(0);
 			executor.setWatchdog(new ExecuteWatchdog(timeoutInSeconds * 1000));
 			executor.setStreamHandler(new OutputHandler(logger, logKey, result));
-			result.setResultCode(executor.execute(cmdLine, env));
+			//if env is null then call execute() method with out env parameter
+		    if(env == null){
+			   result.setResultCode(executor.execute(cmdLine));
+		    }else{
+		       result.setResultCode(executor.execute(cmdLine, env));
+		    }
 
 			// set fault to last error if fault map is empty
 			if (result.getResultCode() != 0 && result.getFaultMap().keySet().size() < 1) {

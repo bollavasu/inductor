@@ -87,7 +87,7 @@ public abstract class AbstractOrderExecutor {
                 "ssh",
                 "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=/dev/null",
-                "-qi"
+                //"-qi"
         };
 
         // interactive needed to get output of execute resource
@@ -140,7 +140,7 @@ public abstract class AbstractOrderExecutor {
 
     protected void processStubbedCloud(CmsWorkOrderSimpleBase wo) {
         try {
-            TimeUnit.SECONDS.sleep(getStubSleepTime(wo));
+            TimeUnit.SECONDS.sleep(config.getStubResponseTimeInSeconds());
         } catch (InterruptedException e) {
             //Sleep for response.
         }
@@ -154,9 +154,9 @@ public abstract class AbstractOrderExecutor {
         }
     }
 
-    protected long getStubSleepTime(CmsWorkOrderSimpleBase wo) {
-        return config.getStubResponseTimeInSeconds();
-    }
+
+
+
 
     /**
      * Set the local wait time for local work-order/action-order
@@ -665,7 +665,19 @@ public abstract class AbstractOrderExecutor {
             throws KeyNotFoundException {
 
         if (wo.isPayLoadEntryPresent(SECURED_BY)) {
-            String key = wo.getPayLoadAttribute(SECURED_BY, PRIVATE);
+        	String key = "", temp="";
+        	if(wo.getCloud().getCiAttributes().get("location").indexOf("google") == -1){
+              key = wo.getPayLoadAttribute(SECURED_BY, PRIVATE);    
+        	} else {
+	        	try (BufferedReader br = new BufferedReader(new FileReader("/home/vasu/.ssh/id_rsa"))) {       			
+	    			while ((temp = br.readLine()) != null) { 
+	    				key = key + temp;
+	    			}
+	    		} catch (Exception e) {
+	    			e.printStackTrace();
+	    		}
+	            logger.info("GENERATED KEY : " + key);
+        	}
             checkIfEmpty(wo, key);
             return writePrivateKey(key);
         } else if (wo.isPayLoadEntryPresent(SERVICED_BY)
